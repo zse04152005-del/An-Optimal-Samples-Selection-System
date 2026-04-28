@@ -5,7 +5,7 @@ Optimal Samples Selection Solver.
 Problem (informal):
 Given a selected sample set S of size n, choose as few k-groups (size-k subsets of S)
 as possible such that every j-subset T of S is "covered" by at least one chosen
-k-group G with |T ∩ G| >= s.
+k-group G with |T intersection G| >= s.
 
 This can be formulated as a set cover ILP and solved with OR-Tools (preferred)
 or PuLP. If those solvers are unavailable, we fall back to an exact branch-and-
@@ -25,6 +25,44 @@ import time
 
 
 MAX_DEFAULT_COVER_RELATION_CHECKS = 50_000_000
+DEFAULT_CPU_WORKER_RATIO = 0.90
+
+
+def safe_comb(n: int, r: int) -> int:
+    if r < 0 or r > n:
+        return 0
+    return comb(n, r)
+
+
+def estimate_coverage_generation(n: int, k: int, j: int, s: int) -> dict:
+    """Estimate optimized coverage generation work for a parameter set."""
+    num_j_subsets = safe_comb(n, j)
+    num_k_groups = safe_comb(n, k)
+
+    covered_subsets_per_group = 0
+    for overlap_size in range(s, j + 1):
+        covered_subsets_per_group += (
+            safe_comb(k, overlap_size) *
+            safe_comb(n - k, j - overlap_size)
+        )
+
+    optimized_coverage_entries = num_k_groups * covered_subsets_per_group
+    naive_relation_checks = num_j_subsets * num_k_groups
+
+    return {
+        "num_j_subsets": num_j_subsets,
+        "num_k_groups": num_k_groups,
+        "covered_subsets_per_group": covered_subsets_per_group,
+        "optimized_coverage_entries": optimized_coverage_entries,
+        "naive_relation_checks": naive_relation_checks,
+    }
+
+
+def default_num_search_workers(cpu_count: Optional[int] = None) -> int:
+    """Use about 90% of logical CPU cores for OR-Tools search by default."""
+    if cpu_count is None:
+        cpu_count = os.cpu_count() or 1
+    return max(1, min(cpu_count, int(cpu_count * DEFAULT_CPU_WORKER_RATIO)))
 
 
 class OptimalSamplesSolver:
@@ -78,29 +116,38 @@ class OptimalSamplesSolver:
         if max_cover_relation_checks is None:
             return
 
-        num_j_subsets = comb(self.n, self.j)
-        num_k_groups = comb(self.n, self.k)
-        relation_checks = num_j_subsets * num_k_groups
+        estimate = estimate_coverage_generation(self.n, self.k, self.j, self.s)
+        coverage_entries = estimate["optimized_coverage_entries"]
 
-        if relation_checks > max_cover_relation_checks:
+        if coverage_entries > max_cover_relation_checks:
             raise ValueError(
                 "Problem is too large for exact local solving with the current implementation. "
-                f"It would require about {relation_checks:,} coverage checks "
-                f"({num_j_subsets:,} j-subsets x {num_k_groups:,} k-groups). "
+                f"It would generate about {coverage_entries:,} coverage entries "
+                f"({estimate['num_k_groups']:,} k-groups x "
+                f"{estimate['covered_subsets_per_group']:,} covered j-subsets per group). "
                 "Use a cached cover, reduce n/k/j, or import more known covers."
             )
 
     def _build_cover_relations(self) -> Tuple[List[List[int]], List[Set[int]]]:
         subset_to_groups: List[List[int]] = [[] for _ in range(len(self.j_subsets))]
         group_to_subsets: List[Set[int]] = [set() for _ in range(len(self.k_groups))]
+        j_subset_index = {subset: idx for idx, subset in enumerate(self.j_subsets)}
 
-        for i, j_subset in enumerate(self.j_subsets):
-            j_set = set(j_subset)
-            for g, k_group in enumerate(self.k_groups):
-                # k,j are small (<=7), set intersection is fine here.
-                if len(j_set.intersection(k_group)) >= self.s:
-                    subset_to_groups[i].append(g)
-                    group_to_subsets[g].add(i)
+        for g, k_group in enumerate(self.k_groups):
+            group_set = set(k_group)
+            outside_group = tuple(sample for sample in self.samples if sample not in group_set)
+
+            for overlap_size in range(self.s, self.j + 1):
+                outside_size = self.j - overlap_size
+                if overlap_size > len(k_group) or outside_size > len(outside_group):
+                    continue
+
+                for inside_part in combinations(k_group, overlap_size):
+                    for outside_part in combinations(outside_group, outside_size):
+                        j_subset = tuple(sorted(inside_part + outside_part))
+                        subset_idx = j_subset_index[j_subset]
+                        subset_to_groups[subset_idx].append(g)
+                        group_to_subsets[g].add(subset_idx)
 
         # Early infeasibility check.
         for i, groups in enumerate(subset_to_groups):
@@ -197,7 +244,7 @@ class OptimalSamplesSolver:
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = float(time_limit_seconds)
         if num_search_workers is None:
-            num_search_workers = min(max((os.cpu_count() or 1) - 1, 1), 8)
+            num_search_workers = default_num_search_workers()
         solver.parameters.num_search_workers = int(num_search_workers)
 
         status = solver.Solve(model)
@@ -355,5 +402,8 @@ class OptimalSamplesSolver:
             "s": self.s,
             "num_j_subsets": len(self.j_subsets),
             "num_k_groups": len(self.k_groups),
+            "optimized_coverage_entries": estimate_coverage_generation(
+                self.n, self.k, self.j, self.s
+            )["optimized_coverage_entries"],
             "samples": self.samples,
         }

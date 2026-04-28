@@ -53,7 +53,7 @@ Cached La Jolla results are returned directly only when they are proven optimal.
 
 ## Large Instances
 
-The GUI estimates `C(n,j) * C(n,k)` before starting an exact local solve. If the estimate is too large, it avoids constructing the full coverage matrix to prevent freezes or crashes. In that case, it returns a cached cover when available, or asks the user to reduce the parameters.
+The GUI estimates the optimized coverage-entry count before starting an exact local solve. Instead of checking every `j`-subset against every `k`-group, the solver generates only the `j`-subsets each `k`-group can actually cover. If the estimate is too large, it avoids constructing the full model to prevent freezes or crashes. In that case, it returns a cached cover when available, or asks the user to reduce the parameters.
 
 
 ## Mobile (Android/iOS)

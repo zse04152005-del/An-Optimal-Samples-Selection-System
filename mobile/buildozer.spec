@@ -13,7 +13,7 @@ package.domain = org.example
 source.dir = .
 
 # (list) Source files to include (if empty, defaults to all)
-source.include_exts = py,kv,md
+source.include_exts = py,kv,md,sqlite
 
 # (str) Application versioning
 version = 1.0

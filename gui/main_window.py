@@ -10,7 +10,6 @@ Provides a user-friendly GUI for:
 
 import sys
 import random
-from math import comb
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QSpinBox, QPushButton, QTextEdit, QTableWidget, QTableWidgetItem,
@@ -25,7 +24,7 @@ import os
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.solver import OptimalSamplesSolver
+from core.solver import OptimalSamplesSolver, estimate_coverage_generation
 from database.db_manager import DatabaseManager
 
 
@@ -151,7 +150,7 @@ class MainWindow(QMainWindow):
         param_layout.addWidget(QLabel("k (Group size, 4-7):"), 2, 0)
         param_layout.addWidget(self.k_spin, 2, 1)
 
-        param_layout.addWidget(QLabel("j (Subset size, s≤j≤k):"), 3, 0)
+        param_layout.addWidget(QLabel("j (Subset size, s <= j <= k):"), 3, 0)
         param_layout.addWidget(self.j_spin, 3, 1)
 
         param_layout.addWidget(QLabel("s (Min overlap, 3-7):"), 4, 0)
@@ -235,6 +234,14 @@ class MainWindow(QMainWindow):
         # Statistics
         self.stats_label = QLabel("")
         results_layout.addWidget(self.stats_label)
+
+        self.status_help_label = QLabel(
+            "Status: OPTIMAL = proven minimum; FEASIBLE = valid but not proven minimum; "
+            "FEASIBLE_CACHED = cached upper-bound result."
+        )
+        self.status_help_label.setWordWrap(True)
+        self.status_help_label.setStyleSheet("color: #555;")
+        results_layout.addWidget(self.status_help_label)
 
         # Results table
         self.results_table = QTableWidget()
@@ -376,7 +383,7 @@ class MainWindow(QMainWindow):
                 self.status_bar.showMessage(f"Loaded {len(cached_solution)} proven optimal groups from cache")
                 return
 
-            estimate = self.estimate_problem_size(n, k, j)
+            estimate = self.estimate_problem_size(n, k, j, s)
             if estimate['relation_checks'] > MAX_GUI_COVER_RELATION_CHECKS:
                 if cached_solution:
                     self.on_solve_finished(cached_solution, 0.0, cached_message, cached_status)
@@ -391,7 +398,8 @@ class MainWindow(QMainWindow):
                     "This parameter set is too large for the current exact local solver.\n\n"
                     f"j-subsets: {estimate['num_j_subsets']:,}\n"
                     f"k-groups: {estimate['num_k_groups']:,}\n"
-                    f"Coverage checks: {estimate['relation_checks']:,}\n\n"
+                    f"Coverage entries: {estimate['optimized_coverage_entries']:,}\n"
+                    f"Naive pair checks avoided: {estimate['naive_relation_checks']:,}\n\n"
                     "Import a known cover, reduce n/k/j, or use a smaller instance for demonstration."
                 )
                 self.status_bar.showMessage("Problem too large; solving was not started")
@@ -420,14 +428,10 @@ class MainWindow(QMainWindow):
         except ValueError as e:
             QMessageBox.critical(self, "Error", str(e))
 
-    def estimate_problem_size(self, n, k, j):
-        num_j_subsets = comb(n, j)
-        num_k_groups = comb(n, k)
-        return {
-            'num_j_subsets': num_j_subsets,
-            'num_k_groups': num_k_groups,
-            'relation_checks': num_j_subsets * num_k_groups,
-        }
+    def estimate_problem_size(self, n, k, j, s):
+        estimate = estimate_coverage_generation(n, k, j, s)
+        estimate['relation_checks'] = estimate['optimized_coverage_entries']
+        return estimate
 
     def get_precomputed_solution(self):
         """Return a trusted cached result before building the expensive solver object."""

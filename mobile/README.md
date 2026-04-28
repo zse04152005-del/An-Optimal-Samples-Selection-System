@@ -7,6 +7,10 @@ This folder contains the **mobile (Android/iOS) UI** for the Optimal Samples Sel
 - The mobile build is **offline** and uses the solver fallback (**exact Branch-and-Bound**) by calling:
   `solve_ilp(prefer_ortools=False, allow_pulp=False)`.
 - Exact solving can be slow for large `n`. Keep `n` small on mobile.
+- The app checks the local known-cover cache before solving. Proven standard covers are returned immediately; other cached covers can be used as feasible upper bounds.
+- Large parameter sets show a warning that recommends using the desktop version. Users may continue on mobile unless the estimated model size exceeds the hard safety limit.
+- The model-size estimate uses the optimized coverage-entry count, not the older `C(n,j) * C(n,k)` pairwise check count.
+- Mobile does not use OR-Tools CPU workers or GPU acceleration. It runs Python Branch-and-Bound in a background thread and uses cached upper bounds to reduce search where possible.
 
 ## Android (Buildozer)
 

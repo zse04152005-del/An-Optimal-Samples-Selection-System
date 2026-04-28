@@ -148,30 +148,25 @@ Double-click `run.bat` file.
 ### Main Window Layout
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│           An Optimal Samples Selection System               │
-├─────────────────────────────────────────────────────────────┤
-│  [Computation Tab]  [Database Tab]                          │
-├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────────┐  ┌─────────────────────────────────┐  │
-│  │   Parameters    │  │      Sample Selection           │  │
-│  │  m: [45-54]     │  │  ○ Random Selection             │  │
-│  │  n: [7-25]      │  │  ○ Manual Input                 │  │
-│  │  k: [4-7]       │  │  [_________________________]    │  │
-│  │  j: [s-k]       │  │  [Generate/Select Samples]      │  │
-│  │  s: [3-7]       │  │  Selected: 1,2,3,4,5,6,7,8,9    │  │
-│  └─────────────────┘  └─────────────────────────────────┘  │
-├─────────────────────────────────────────────────────────────┤
-│  [Solve (Find Optimal Groups)] [Save Results] [Clear]       │
-├─────────────────────────────────────────────────────────────┤
-│  Results:  Method: OR-Tools | Time: 0.05s | Groups: 12      │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │ Group # │ Members                                   │    │
-│  │    1    │ 1, 2, 3, 4, 5, 6                         │    │
-│  │    2    │ 1, 2, 3, 4, 5, 7                         │    │
-│  │   ...   │ ...                                      │    │
-│  └─────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────┘
+An Optimal Samples Selection System
+
+[Computation Tab] [Database Tab]
+
+Parameters                 Sample Selection
+- m: 45-54                 - Random Selection / Manual Input
+- n: 7-25                  - Enter samples as comma-separated integers
+- k: 4-7                   - Generate/Select Samples
+- j: s <= j <= k           - Selected samples display
+- s: 3-7
+
+Actions
+- Solve (Find Optimal Groups)
+- Save Results to DB
+- Clear
+
+Results
+- Method, status, time, and group count
+- Table of selected k-groups
 ```
 
 ### Parameter Descriptions
@@ -186,8 +181,8 @@ Double-click `run.bat` file.
 
 ### Constraint Rules
 
-- s ≤ j ≤ k
-- n ≤ m
+- s <= j <= k
+- n <= m
 - All parameters must be positive integers
 
 ---
@@ -331,40 +326,40 @@ pip3 install ortools
 - For large n values (>15), solving may take longer
 - The solver has a 5-minute timeout
 - Try smaller parameter values for faster results
-- Very large parameter sets are blocked before solving if they would create too many coverage checks. If a cached La Jolla/project result exists, the system loads that result instead of building the full ILP model.
-- The desktop solver uses OR-Tools CPU search. GPU acceleration is not supported for this CP-SAT/ILP workflow.
+- Very large parameter sets are blocked before solving if they would create too many coverage entries. If a cached La Jolla/project result exists, the system loads that result instead of building the full ILP model.
+- The desktop solver uses OR-Tools CPU search with about 90% of logical CPU cores as parallel workers by default. GPU acceleration is not supported for this CP-SAT/ILP workflow.
 
 ### Problem: "No solution found"
 
 **Solution:**
 - This occurs when parameters create an infeasible problem
-- Verify that s ≤ j ≤ k
+- Verify that s <= j <= k
 - Try different parameter combinations
 
 ---
 
 ## 10. FAQ
 
-**Q: What algorithm does the system use?**
+**Q: What algorithm does the system usex**
 
 A: The system uses Integer Linear Programming (ILP) solved by Google OR-Tools CP-SAT solver. It guarantees optimal (minimum) solutions only when the solver status is `OPTIMAL`; `FEASIBLE` means a valid solution was found but optimality has not been proven.
 
-**Q: How long does solving take?**
+**Q: How long does solving takex**
 
 A: Solving time depends on parameters:
-- Small problems (n≤10): < 1 second
+- Small problems (n <= 10): < 1 second
 - Medium problems (n=10-15): 1-30 seconds
 - Large problems (n>15): May take several minutes
 
-**Q: Can I use letters instead of numbers?**
+**Q: Can I use letters instead of numbersx**
 
 A: No, the system uses positive integers (1, 2, 3, ..., 54) as specified in the project requirements.
 
-**Q: Where are my results saved?**
+**Q: Where are my results savedx**
 
 A: Results are saved in SQLite database files in the `results/` folder with the naming format `m-n-k-j-s-run-groups.db`.
 
-**Q: Can I export results to other formats?**
+**Q: Can I export results to other formatsx**
 
 A: Currently, results are stored in SQLite format. You can view and copy results from the application interface.
 
