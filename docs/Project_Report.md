@@ -20,7 +20,7 @@
 
 ## 1. Introduction
 
-This project implements an **Optimal Samples Selection System** that solves a combinatorial optimization problem arising from group (sample) selection. The goal is to select as few groups as possible while ensuring every required subset is “covered” under a given overlap rule.
+This project implements an **Optimal Samples Selection System** that solves a combinatorial optimization problem arising from group (sample) selection. The goal is to select as few groups as possible while ensuring every required subset is "covered" under a given overlap rule.
 
 The delivered system includes:
 
@@ -40,13 +40,13 @@ We must output a collection of **k-groups** (each is a size-`k` subset of `S`) s
 
 - For every **j-subset** `T` of `S`, at least one selected k-group `G` satisfies:
 
-  `|T ∩ G| >= s`.
+  `|T intersection G| >= s`.
 
 Objective:
 
 - Minimize the number of selected k-groups.
 
-This can be viewed as a **set cover** variant where each k-group “covers” the j-subsets it sufficiently overlaps.
+This can be viewed as a **set cover** variant where each k-group "covers" the j-subsets it sufficiently overlaps.
 
 ## 3. Mathematical Formulation (ILP)
 
@@ -54,21 +54,21 @@ Let:
 
 - `U` be the set of all j-subsets of `S`. `|U| = C(n, j)`.
 - `K` be the set of all candidate k-groups of `S`. `|K| = C(n, k)`.
-- `cover(i, g)` be 1 if k-group `g` covers j-subset `i`, i.e., `|i ∩ g| >= s`, otherwise 0.
+- `cover(i, g)` be 1 if k-group `g` covers j-subset `i`, i.e., `|i intersection g| >= s`, otherwise 0.
 
 Decision variables:
 
-- For each candidate k-group `g ∈ K`, define a binary variable `x_g ∈ {0,1}` indicating whether `g` is selected.
+- For each candidate k-group `g in K`, define a binary variable `x_g in {0,1}` indicating whether `g` is selected.
 
 Objective:
 
-- Minimize `Σ_{g∈K} x_g`.
+- Minimize `sum_{g in K} x_g`.
 
 Constraints:
 
-- For every `i ∈ U`, ensure it is covered by at least one selected k-group:
+- For every `i in U`, ensure it is covered by at least one selected k-group:
 
-  `Σ_{g∈K} cover(i, g) * x_g >= 1`.
+  `sum_{g in K} cover(i, g) * x_g >= 1`.
 
 This ILP guarantees optimality when solved to optimality.
 
@@ -104,7 +104,7 @@ In `core/solver.py`, the solver enumerates:
 
 Then for each pair `(j_subset, k_group)`, it checks whether the overlap size is at least `s`.
 
-This creates a boolean matrix of size `C(n,j) × C(n,k)`. While straightforward and reliable, it can grow quickly as `n` increases.
+Earlier versions checked every pair in `C(n,j) x C(n,k)`. The current implementation generates coverage from each candidate k-group directly: for each possible overlap size `r` from `s` to `j`, it combines `r` elements inside the k-group with `j-r` elements outside it. This creates only the actual coverage entries and avoids many unnecessary pair checks.
 
 ### 5.2 ILP Solving Strategy
 
@@ -115,12 +115,21 @@ The method `solve_ilp()` tries solvers in the following order:
 3. A custom **Branch and Bound** fallback.
 
 A 5-minute time limit is set for OR-Tools and PuLP to keep the GUI responsive on larger instances.
+The application records solver status separately: `OPTIMAL` means the result is proven minimum, while `FEASIBLE` means the result satisfies all coverage constraints but may still be improvable.
+OR-Tools CP-SAT is configured to use about 90% of the machine's logical CPU cores as parallel search workers by default. GPU acceleration is not used because the branch-and-bound / constraint-propagation workload is irregular and is not a good fit for the dense numeric kernels where GPUs are most effective.
 
-### 5.3 GUI Responsiveness
+### 5.3 Known Cover Cache
+
+The system maintains a reusable SQLite cache at `results/known_covers.sqlite`.
+For the special case `s = j`, the project instance is equivalent to the standard covering design `C(n,k,j)`, so proven optimal results from the La Jolla Covering Repository can be returned directly.
+For non-exact or `s < j` cases, cached covers are used only as feasible upper bounds and OR-Tools hints; the solver is still allowed to search the full candidate space for better solutions.
+Before constructing the solver, the GUI estimates the optimized coverage-entry count. If this estimate is too large, the system avoids building the full model and either returns a cached feasible result or asks the user to choose smaller parameters.
+
+### 5.4 GUI Responsiveness
 
 The GUI uses a background thread (`SolverThread`) to run the solver without blocking the main UI thread. This allows the interface to remain responsive while the optimization runs.
 
-### 5.4 Result Persistence (SQLite)
+### 5.5 Result Persistence (SQLite)
 
 Results are stored as individual SQLite files under `results/` using a naming convention:
 
