@@ -159,12 +159,22 @@ class OptimalSamplesSolver:
     def solve_ilp(
         self,
         progress_callback: Optional[Callable[[int, int, int], None]] = None,
+<<<<<<< HEAD
+        time_limit_seconds: float = 70.0,
+=======
         time_limit_seconds: float = 300.0,
+>>>>>>> 311a0a2c5536d8f6c482ee28606985489c1947ba
         prefer_ortools: bool = True,
         allow_pulp: bool = True,
         initial_solution: Optional[List[Tuple]] = None,
         initial_solution_status: str = "FEASIBLE",
         num_search_workers: Optional[int] = None,
+<<<<<<< HEAD
+        relative_gap_limit: float = 0.05,
+        extension_seconds: float = 5.0,
+        early_stop_gap: float = 0.02,
+=======
+>>>>>>> 311a0a2c5536d8f6c482ee28606985489c1947ba
     ) -> Tuple[List[Tuple], float, str]:
         """Solve the instance.
 
@@ -188,6 +198,12 @@ class OptimalSamplesSolver:
                     time_limit_seconds=time_limit_seconds,
                     initial_solution=initial_solution,
                     num_search_workers=num_search_workers,
+<<<<<<< HEAD
+                    relative_gap_limit=relative_gap_limit,
+                    extension_seconds=extension_seconds,
+                    early_stop_gap=early_stop_gap,
+=======
+>>>>>>> 311a0a2c5536d8f6c482ee28606985489c1947ba
                 )
                 method = "OR-Tools CP-SAT"
                 return result, time.time() - start_time, method
@@ -203,7 +219,14 @@ class OptimalSamplesSolver:
 
         if allow_pulp:
             try:
+<<<<<<< HEAD
+                result = self._solve_with_pulp(
+                    time_limit_seconds=time_limit_seconds,
+                    relative_gap_limit=relative_gap_limit,
+                )
+=======
                 result = self._solve_with_pulp(time_limit_seconds=time_limit_seconds)
+>>>>>>> 311a0a2c5536d8f6c482ee28606985489c1947ba
                 method = "PuLP CBC"
                 return result, time.time() - start_time, method
             except ImportError:
@@ -223,9 +246,18 @@ class OptimalSamplesSolver:
 
     def _solve_with_ortools(
         self,
+<<<<<<< HEAD
+        time_limit_seconds: float = 70.0,
+        initial_solution: Optional[List[Tuple]] = None,
+        num_search_workers: Optional[int] = None,
+        relative_gap_limit: float = 0.05,
+        extension_seconds: float = 5.0,
+        early_stop_gap: float = 0.02,
+=======
         time_limit_seconds: float = 300.0,
         initial_solution: Optional[List[Tuple]] = None,
         num_search_workers: Optional[int] = None,
+>>>>>>> 311a0a2c5536d8f6c482ee28606985489c1947ba
     ) -> List[Tuple]:
         from ortools.sat.python import cp_model
 
@@ -245,6 +277,52 @@ class OptimalSamplesSolver:
             for g in initial_group_ids:
                 model.AddHint(x[g], 1)
 
+<<<<<<< HEAD
+        if num_search_workers is None:
+            num_search_workers = default_num_search_workers()
+
+        def _make_solver(time_limit: float, gap: float) -> cp_model.CpSolver:
+            s = cp_model.CpSolver()
+            s.parameters.max_time_in_seconds = float(time_limit)
+            s.parameters.relative_gap_limit = float(gap)
+            s.parameters.num_search_workers = int(num_search_workers)
+            s.parameters.linearization_level = 2
+            return s
+
+        # ── Phase 1 ──
+        solver = _make_solver(time_limit_seconds, early_stop_gap)
+        status = solver.Solve(model)
+        self.last_status = solver.StatusName(status)
+        self.last_best_bound = solver.BestObjectiveBound()
+
+        if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            result = [self.k_groups[g] for g in range(num_groups) if solver.Value(x[g]) == 1]
+            self.last_objective = len(result)
+
+            obj = float(len(result))
+            bound = float(self.last_best_bound) if self.last_best_bound else obj
+            gap = (obj - bound) / obj if obj > 0 else 0.0
+
+            if gap <= early_stop_gap or status == cp_model.OPTIMAL:
+                return result
+
+            # ── Phase 2: extend by extension_seconds ──
+            if gap <= relative_gap_limit:
+                solver2 = _make_solver(extension_seconds, 0.0)
+                for g_idx in [i for i in range(num_groups) if solver.Value(x[i]) == 1]:
+                    model.AddHint(x[g_idx], 1)
+                status2 = solver2.Solve(model)
+                self.last_status = solver2.StatusName(status2)
+                self.last_best_bound = solver2.BestObjectiveBound()
+                if status2 in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+                    result2 = [self.k_groups[g] for g in range(num_groups) if solver2.Value(x[g]) == 1]
+                    if len(result2) <= len(result):
+                        self.last_objective = len(result2)
+                        return result2
+
+            return result
+
+=======
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = float(time_limit_seconds)
         if num_search_workers is None:
@@ -258,6 +336,7 @@ class OptimalSamplesSolver:
             result = [self.k_groups[g] for g in range(num_groups) if solver.Value(x[g]) == 1]
             self.last_objective = len(result)
             return result
+>>>>>>> 311a0a2c5536d8f6c482ee28606985489c1947ba
         raise RuntimeError("No solution found")
 
     def _initial_group_indices(self, initial_solution: Optional[List[Tuple]]) -> List[int]:
@@ -274,7 +353,11 @@ class OptimalSamplesSolver:
 
         return group_ids if self.verify_solution(initial_solution) else []
 
+<<<<<<< HEAD
+    def _solve_with_pulp(self, time_limit_seconds: float = 65.0, relative_gap_limit: float = 0.10) -> List[Tuple]:
+=======
     def _solve_with_pulp(self, time_limit_seconds: float = 300.0) -> List[Tuple]:
+>>>>>>> 311a0a2c5536d8f6c482ee28606985489c1947ba
         import pulp
 
         num_groups = len(self.k_groups)
@@ -287,6 +370,21 @@ class OptimalSamplesSolver:
         for i, covering_group_ids in enumerate(self.subset_to_groups):
             prob += pulp.lpSum(x[g] for g in covering_group_ids) >= 1
 
+<<<<<<< HEAD
+        prob.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=float(time_limit_seconds), fracGap=float(relative_gap_limit)))
+
+        if prob.status in (pulp.LpStatusOptimal, pulp.LpStatus.get(0, None)) or pulp.value(pulp.lpSum(x)) is not None:
+            try:
+                result = [self.k_groups[g] for g in range(num_groups) if (pulp.value(x[g]) or 0) >= 0.5]
+                if result:
+                    is_optimal = prob.status == pulp.LpStatusOptimal
+                    self.last_status = "OPTIMAL" if is_optimal else "FEASIBLE"
+                    self.last_objective = len(result)
+                    self.last_best_bound = len(result) if is_optimal else None
+                    return result
+            except Exception:
+                pass
+=======
         prob.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=float(time_limit_seconds)))
 
         if prob.status == pulp.LpStatusOptimal:
@@ -295,6 +393,7 @@ class OptimalSamplesSolver:
             self.last_objective = len(result)
             self.last_best_bound = len(result)
             return result
+>>>>>>> 311a0a2c5536d8f6c482ee28606985489c1947ba
         raise RuntimeError("No solution found")
 
     def _greedy_feasible_solution(self) -> List[int]:
