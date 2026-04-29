@@ -1,0 +1,463 @@
+"""core.solver
+
+Optimal Samples Selection Solver.
+
+Problem (informal):
+Given a selected sample set S of size n, choose as few k-groups (size-k subsets of S)
+as possible such that every j-subset T of S is "covered" by at least one chosen
+k-group G with |T intersection G| >= s.
+
+This can be formulated as a set cover ILP and solved with OR-Tools (preferred)
+or PuLP. If those solvers are unavailable, we fall back to an exact branch-and-
+bound search.
+
+Note: The search space grows quickly with n; practical instances on mobile
+should use small n.
+"""
+
+from __future__ import annotations
+
+from itertools import combinations
+from typing import List, Tuple, Set, Optional, Callable, Dict
+from math import comb
+import os
+import time
+
+
+MAX_DEFAULT_COVER_RELATION_CHECKS = 50_000_000
+DEFAULT_CPU_WORKER_RATIO = 0.90
+
+
+def safe_comb(n: int, r: int) -> int:
+    if r < 0 or r > n:
+        return 0
+    return comb(n, r)
+
+
+def estimate_coverage_generation(n: int, k: int, j: int, s: int) -> dict:
+    """Estimate optimized coverage generation work for a parameter set."""
+    num_j_subsets = safe_comb(n, j)
+    num_k_groups = safe_comb(n, k)
+
+    covered_subsets_per_group = 0
+    for overlap_size in range(s, j + 1):
+        covered_subsets_per_group += (
+            safe_comb(k, overlap_size) *
+            safe_comb(n - k, j - overlap_size)
+        )
+
+    optimized_coverage_entries = num_k_groups * covered_subsets_per_group
+    naive_relation_checks = num_j_subsets * num_k_groups
+
+    return {
+        "num_j_subsets": num_j_subsets,
+        "num_k_groups": num_k_groups,
+        "covered_subsets_per_group": covered_subsets_per_group,
+        "optimized_coverage_entries": optimized_coverage_entries,
+        "naive_relation_checks": naive_relation_checks,
+    }
+
+
+def default_num_search_workers(cpu_count: Optional[int] = None) -> int:
+    """Use about 90% of logical CPU cores for OR-Tools search by default."""
+    if cpu_count is None:
+        cpu_count = os.cpu_count() or 1
+    return max(1, min(cpu_count, int(cpu_count * DEFAULT_CPU_WORKER_RATIO)))
+
+
+class OptimalSamplesSolver:
+    """Solver for the Optimal Samples Selection Problem."""
+
+    def __init__(
+        self,
+        n: int,
+        k: int,
+        j: int,
+        s: int,
+        samples: List[int],
+        max_cover_relation_checks: Optional[int] = MAX_DEFAULT_COVER_RELATION_CHECKS,
+    ):
+        self.n = n
+        self.k = k
+        self.j = j
+        self.s = s
+        self.samples = sorted(samples)
+
+        self._validate_parameters()
+        self._validate_problem_size(max_cover_relation_checks)
+
+        # All j-subsets must be covered; all k-groups are candidate sets.
+        self.j_subsets = list(combinations(self.samples, j))
+        self.k_groups = list(combinations(self.samples, k))
+        self._k_group_index: Dict[Tuple[int, ...], int] = {
+            group: idx for idx, group in enumerate(self.k_groups)
+        }
+
+        self.last_status = "NOT_SOLVED"
+        self.last_objective = None
+        self.last_best_bound = None
+
+        # Coverage relations.
+        # subset_to_groups[i] = list of group indices that cover j-subset i
+        # group_to_subsets[g] = set of j-subset indices covered by group g
+        self.subset_to_groups, self.group_to_subsets = self._build_cover_relations()
+
+    def _validate_parameters(self) -> None:
+        if not (4 <= self.k <= 7):
+            raise ValueError(f"k must be between 4 and 7, got {self.k}")
+        if not (3 <= self.s <= 7):
+            raise ValueError(f"s must be between 3 and 7, got {self.s}")
+        if not (self.s <= self.j <= self.k):
+            raise ValueError(f"Must have s <= j <= k, got s={self.s}, j={self.j}, k={self.k}")
+        if len(self.samples) != self.n:
+            raise ValueError(f"Expected {self.n} samples, got {len(self.samples)}")
+
+    def _validate_problem_size(self, max_cover_relation_checks: Optional[int]) -> None:
+        if max_cover_relation_checks is None:
+            return
+
+        estimate = estimate_coverage_generation(self.n, self.k, self.j, self.s)
+        coverage_entries = estimate["optimized_coverage_entries"]
+
+        if coverage_entries > max_cover_relation_checks:
+            raise ValueError(
+                "Problem is too large for exact local solving with the current implementation. "
+                f"It would generate about {coverage_entries:,} coverage entries "
+                f"({estimate['num_k_groups']:,} k-groups x "
+                f"{estimate['covered_subsets_per_group']:,} covered j-subsets per group). "
+                "Use a cached cover, reduce n/k/j, or import more known covers."
+            )
+
+    def _build_cover_relations(self) -> Tuple[List[List[int]], List[Set[int]]]:
+        subset_to_groups: List[List[int]] = [[] for _ in range(len(self.j_subsets))]
+        group_to_subsets: List[Set[int]] = [set() for _ in range(len(self.k_groups))]
+        j_subset_index = {subset: idx for idx, subset in enumerate(self.j_subsets)}
+
+        for g, k_group in enumerate(self.k_groups):
+            group_set = set(k_group)
+            outside_group = tuple(sample for sample in self.samples if sample not in group_set)
+
+            for overlap_size in range(self.s, self.j + 1):
+                outside_size = self.j - overlap_size
+                if overlap_size > len(k_group) or outside_size > len(outside_group):
+                    continue
+
+                for inside_part in combinations(k_group, overlap_size):
+                    for outside_part in combinations(outside_group, outside_size):
+                        j_subset = tuple(sorted(inside_part + outside_part))
+                        subset_idx = j_subset_index[j_subset]
+                        subset_to_groups[subset_idx].append(g)
+                        group_to_subsets[g].add(subset_idx)
+
+        # Early infeasibility check.
+        for i, groups in enumerate(subset_to_groups):
+            if not groups:
+                raise ValueError(f"j-subset {i} cannot be covered by any k-group")
+
+        return subset_to_groups, group_to_subsets
+
+    def solve_ilp(
+        self,
+        progress_callback: Optional[Callable[[int, int, int], None]] = None,
+        time_limit_seconds: float = 70.0,
+        prefer_ortools: bool = True,
+        allow_pulp: bool = True,
+        initial_solution: Optional[List[Tuple]] = None,
+        initial_solution_status: str = "FEASIBLE",
+        num_search_workers: Optional[int] = None,
+        relative_gap_limit: float = 0.05,
+        extension_seconds: float = 5.0,
+        early_stop_gap: float = 0.02,
+    ) -> Tuple[List[Tuple], float, str]:
+        """Solve the instance.
+
+        Returns:
+            (selected_groups, solve_time, method_used)
+
+        Method selection:
+        - If prefer_ortools is True, try OR-Tools CP-SAT.
+        - Otherwise, or if OR-Tools is unavailable, try PuLP.
+        - Otherwise fall back to an exact Branch and Bound search.
+
+        If time_limit_seconds is exceeded in the fallback search, a TimeoutError
+        is raised.
+        """
+
+        start_time = time.time()
+
+        if prefer_ortools:
+            try:
+                result = self._solve_with_ortools(
+                    time_limit_seconds=time_limit_seconds,
+                    initial_solution=initial_solution,
+                    num_search_workers=num_search_workers,
+                    relative_gap_limit=relative_gap_limit,
+                    extension_seconds=extension_seconds,
+                    early_stop_gap=early_stop_gap,
+                )
+                method = "OR-Tools CP-SAT"
+                return result, time.time() - start_time, method
+            except RuntimeError:
+                if initial_solution and self.verify_solution(initial_solution):
+                    self.last_status = initial_solution_status
+                    self.last_objective = len(initial_solution)
+                    self.last_best_bound = None
+                    return initial_solution, time.time() - start_time, "Cached upper bound"
+                raise
+            except ImportError:
+                pass
+
+        if allow_pulp:
+            try:
+                result = self._solve_with_pulp(
+                    time_limit_seconds=time_limit_seconds,
+                    relative_gap_limit=relative_gap_limit,
+                )
+                method = "PuLP CBC"
+                return result, time.time() - start_time, method
+            except ImportError:
+                pass
+
+        # Exact fallback.
+        result = self._solve_branch_and_bound(
+            progress_callback=progress_callback,
+            time_limit_seconds=time_limit_seconds,
+            initial_solution=initial_solution,
+        )
+        self.last_status = "OPTIMAL"
+        self.last_objective = len(result)
+        self.last_best_bound = len(result)
+        method = "Branch and Bound (Exact)"
+        return result, time.time() - start_time, method
+
+    def _solve_with_ortools(
+        self,
+        time_limit_seconds: float = 70.0,
+        initial_solution: Optional[List[Tuple]] = None,
+        num_search_workers: Optional[int] = None,
+        relative_gap_limit: float = 0.05,
+        extension_seconds: float = 5.0,
+        early_stop_gap: float = 0.02,
+    ) -> List[Tuple]:
+        from ortools.sat.python import cp_model
+
+        model = cp_model.CpModel()
+        num_groups = len(self.k_groups)
+
+        x = [model.NewBoolVar(f"x_{g}") for g in range(num_groups)]
+
+        for i, covering_group_ids in enumerate(self.subset_to_groups):
+            model.Add(sum(x[g] for g in covering_group_ids) >= 1)
+
+        model.Minimize(sum(x))
+
+        initial_group_ids = self._initial_group_indices(initial_solution)
+        if initial_group_ids:
+            model.Add(sum(x) <= len(initial_group_ids))
+            for g in initial_group_ids:
+                model.AddHint(x[g], 1)
+
+        if num_search_workers is None:
+            num_search_workers = default_num_search_workers()
+
+        def _make_solver(time_limit: float, gap: float) -> cp_model.CpSolver:
+            s = cp_model.CpSolver()
+            s.parameters.max_time_in_seconds = float(time_limit)
+            s.parameters.relative_gap_limit = float(gap)
+            s.parameters.num_search_workers = int(num_search_workers)
+            s.parameters.linearization_level = 2
+            return s
+
+        # ── Phase 1 ──
+        solver = _make_solver(time_limit_seconds, early_stop_gap)
+        status = solver.Solve(model)
+        self.last_status = solver.StatusName(status)
+        self.last_best_bound = solver.BestObjectiveBound()
+
+        if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            result = [self.k_groups[g] for g in range(num_groups) if solver.Value(x[g]) == 1]
+            self.last_objective = len(result)
+
+            obj = float(len(result))
+            bound = float(self.last_best_bound) if self.last_best_bound else obj
+            gap = (obj - bound) / obj if obj > 0 else 0.0
+
+            if gap <= early_stop_gap or status == cp_model.OPTIMAL:
+                return result
+
+            # ── Phase 2: extend by extension_seconds ──
+            if gap <= relative_gap_limit:
+                solver2 = _make_solver(extension_seconds, 0.0)
+                for g_idx in [i for i in range(num_groups) if solver.Value(x[i]) == 1]:
+                    model.AddHint(x[g_idx], 1)
+                status2 = solver2.Solve(model)
+                self.last_status = solver2.StatusName(status2)
+                self.last_best_bound = solver2.BestObjectiveBound()
+                if status2 in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+                    result2 = [self.k_groups[g] for g in range(num_groups) if solver2.Value(x[g]) == 1]
+                    if len(result2) <= len(result):
+                        self.last_objective = len(result2)
+                        return result2
+
+            return result
+
+        raise RuntimeError("No solution found")
+
+    def _initial_group_indices(self, initial_solution: Optional[List[Tuple]]) -> List[int]:
+        if not initial_solution:
+            return []
+
+        group_ids = []
+        for group in initial_solution:
+            normalized = tuple(sorted(group))
+            idx = self._k_group_index.get(normalized)
+            if idx is None:
+                return []
+            group_ids.append(idx)
+
+        return group_ids if self.verify_solution(initial_solution) else []
+
+    def _solve_with_pulp(self, time_limit_seconds: float = 65.0, relative_gap_limit: float = 0.10) -> List[Tuple]:
+        import pulp
+
+        num_groups = len(self.k_groups)
+
+        prob = pulp.LpProblem("OptimalSamplesSelection", pulp.LpMinimize)
+        x = [pulp.LpVariable(f"x_{g}", cat="Binary") for g in range(num_groups)]
+
+        prob += pulp.lpSum(x)
+
+        for i, covering_group_ids in enumerate(self.subset_to_groups):
+            prob += pulp.lpSum(x[g] for g in covering_group_ids) >= 1
+
+        prob.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=float(time_limit_seconds), fracGap=float(relative_gap_limit)))
+
+        if prob.status in (pulp.LpStatusOptimal, pulp.LpStatus.get(0, None)) or pulp.value(pulp.lpSum(x)) is not None:
+            try:
+                result = [self.k_groups[g] for g in range(num_groups) if (pulp.value(x[g]) or 0) >= 0.5]
+                if result:
+                    is_optimal = prob.status == pulp.LpStatusOptimal
+                    self.last_status = "OPTIMAL" if is_optimal else "FEASIBLE"
+                    self.last_objective = len(result)
+                    self.last_best_bound = len(result) if is_optimal else None
+                    return result
+            except Exception:
+                pass
+        raise RuntimeError("No solution found")
+
+    def _greedy_feasible_solution(self) -> List[int]:
+        """Return a feasible solution (list of group indices) using a greedy heuristic."""
+        uncovered: Set[int] = set(range(len(self.j_subsets)))
+        selected: List[int] = []
+
+        while uncovered:
+            # Pick a most constrained subset, then choose a group that covers the most uncovered.
+            target = min(uncovered, key=lambda i: len(self.subset_to_groups[i]))
+            best_g = None
+            best_gain = -1
+            for g in self.subset_to_groups[target]:
+                gain = len(self.group_to_subsets[g].intersection(uncovered))
+                if gain > best_gain:
+                    best_gain = gain
+                    best_g = g
+
+            if best_g is None or best_gain <= 0:
+                # Should not happen due to infeasibility check in _build_cover_relations.
+                raise RuntimeError("Failed to construct a feasible solution")
+
+            selected.append(best_g)
+            uncovered.difference_update(self.group_to_subsets[best_g])
+
+        return selected
+
+    def _solve_branch_and_bound(
+        self,
+        progress_callback: Optional[Callable[[int, int, int], None]] = None,
+        time_limit_seconds: float = 300.0,
+        initial_solution: Optional[List[Tuple]] = None,
+    ) -> List[Tuple]:
+        """Exact Branch and Bound fallback.
+
+        This method is used when ILP solvers are unavailable (e.g., mobile builds).
+        It is guaranteed optimal if it finishes before time_limit_seconds.
+        """
+
+        start = time.time()
+        num_subsets = len(self.j_subsets)
+
+        # Initial upper bound from a cached solution or a greedy feasible solution.
+        initial_group_ids = self._initial_group_indices(initial_solution)
+        best_solution = initial_group_ids if initial_group_ids else self._greedy_feasible_solution()
+        best_size = len(best_solution)
+
+        global_max_cover = max((len(s) for s in self.group_to_subsets), default=0)
+        if global_max_cover <= 0:
+            raise RuntimeError("No solution found")
+
+        def lower_bound(uncovered: Set[int]) -> int:
+            # Safe (possibly loose) bound: each group can cover at most global_max_cover subsets.
+            # Using a larger denominator makes the bound smaller => never overestimates.
+            return (len(uncovered) + global_max_cover - 1) // global_max_cover
+
+        def branch(selected: List[int], uncovered: Set[int], depth: int) -> None:
+            nonlocal best_solution, best_size
+
+            if time.time() - start > time_limit_seconds:
+                raise TimeoutError(f"Branch and bound exceeded time limit ({time_limit_seconds}s)")
+
+            if not uncovered:
+                if len(selected) < best_size:
+                    best_solution = selected.copy()
+                    best_size = len(selected)
+                return
+
+            # Basic pruning.
+            if len(selected) >= best_size:
+                return
+
+            if len(selected) + lower_bound(uncovered) >= best_size:
+                return
+
+            # Choose a most constrained uncovered subset.
+            target = min(uncovered, key=lambda i: len(self.subset_to_groups[i]))
+
+            # Try groups that cover target, best-first by gain.
+            candidates = list(self.subset_to_groups[target])
+            candidates.sort(key=lambda g: len(self.group_to_subsets[g].intersection(uncovered)), reverse=True)
+
+            for g in candidates:
+                gain = self.group_to_subsets[g].intersection(uncovered)
+                if not gain:
+                    continue
+
+                new_uncovered = uncovered.difference(gain)
+                branch(selected + [g], new_uncovered, depth + 1)
+
+                if progress_callback and depth == 0:
+                    progress_callback(depth, len(selected) + 1, best_size)
+
+        uncovered0: Set[int] = set(range(num_subsets))
+        branch([], uncovered0, 0)
+
+        return [self.k_groups[g] for g in best_solution]
+
+    def verify_solution(self, selected_groups: List[Tuple]) -> bool:
+        for j_subset in self.j_subsets:
+            j_set = set(j_subset)
+            if not any(len(j_set.intersection(k_group)) >= self.s for k_group in selected_groups):
+                return False
+        return True
+
+    def get_statistics(self) -> dict:
+        return {
+            "n": self.n,
+            "k": self.k,
+            "j": self.j,
+            "s": self.s,
+            "num_j_subsets": len(self.j_subsets),
+            "num_k_groups": len(self.k_groups),
+            "optimized_coverage_entries": estimate_coverage_generation(
+                self.n, self.k, self.j, self.s
+            )["optimized_coverage_entries"],
+            "samples": self.samples,
+        }
