@@ -86,12 +86,14 @@ Repository modules:
 High-level data flow:
 
 1. User selects parameters (`m, n, k, j, s`) and a sample set `S`.
-2. The GUI creates an `OptimalSamplesSolver` with (`n, k, j, s, S`).
-3. The solver generates:
+2. User selects a per-round exact solver time limit, with 70 seconds as the default.
+3. The GUI creates an `OptimalSamplesSolver` with (`n, k, j, s, S`).
+4. The solver generates:
    - All j-subsets (`C(n,j)`) and candidate k-groups (`C(n,k)`),
    - A coverage matrix indicating which k-groups cover which j-subsets.
-4. An ILP is built and solved (OR-Tools CP-SAT by default).
-5. Selected k-groups are displayed and can be saved to SQLite.
+5. Simulated Annealing generates a feasible upper bound.
+6. An ILP is built and solved (OR-Tools CP-SAT by default) within the selected time limit.
+7. Selected k-groups are displayed and can be saved to SQLite.
 
 ## 5. Key Implementation Details
 
@@ -106,15 +108,28 @@ Then for each pair `(j_subset, k_group)`, it checks whether the overlap size is 
 
 Earlier versions checked every pair in `C(n,j) x C(n,k)`. The current implementation generates coverage from each candidate k-group directly: for each possible overlap size `r` from `s` to `j`, it combines `r` elements inside the k-group with `j-r` elements outside it. This creates only the actual coverage entries and avoids many unnecessary pair checks.
 
-### 5.2 ILP Solving Strategy
+### 5.2 Simulated Annealing + ILP Solving Strategy
 
-The method `solve_ilp()` tries solvers in the following order:
+Before the exact ILP search, the desktop solver now runs a short **Simulated Annealing (SA)** phase to generate a strong feasible upper bound. The SA state is a set of selected k-groups. Each iteration perturbs the current state by removing, swapping, or adding candidate groups, then repairs uncovered j-subsets using randomized coverage choices.
+
+If the new state is better, it is accepted immediately. If it is worse, the solver may still accept it with probability:
+
+`exp(-delta / temperature)`
+
+The temperature decreases over time, so early iterations explore more aggressively and later iterations become more conservative. This helps avoid greedy traps where a locally attractive group blocks better combinations.
+
+The resulting SA solution is used as:
+
+- A feasible result if exact solving cannot improve it within the time limit.
+- An upper bound and warm-start hint for OR-Tools CP-SAT.
+
+After the SA phase, `solve_ilp()` tries solvers in the following order:
 
 1. **OR-Tools CP-SAT** (preferred; fast and reliable for many instances).
 2. **PuLP (CBC)** as a secondary option.
 3. A custom **Branch and Bound** fallback.
 
-A 5-minute time limit is set for OR-Tools and PuLP to keep the GUI responsive on larger instances.
+The default exact-solver time limit is 70 seconds per round. The GUI lets the user select common presets or type a custom per-round limit between 5 and 3600 seconds.
 The application records solver status separately: `OPTIMAL` means the result is proven minimum, while `FEASIBLE` means the result satisfies all coverage constraints but may still be improvable.
 OR-Tools CP-SAT is configured to use about 90% of the machine's logical CPU cores as parallel search workers by default. GPU acceleration is not used because the branch-and-bound / constraint-propagation workload is irregular and is not a good fit for the dense numeric kernels where GPUs are most effective.
 
@@ -142,7 +157,12 @@ Each DB contains:
 
 ## 6. Validation and Example
 
-The solver includes a `verify_solution()` routine that checks every j-subset is covered by the selected groups according to the overlap rule.
+The solver includes a verification routine that checks every j-subset is covered by the selected groups according to the overlap rule. The GUI exposes this through the **Verify** button and a Verification panel, which reports:
+
+- Covered j-subsets versus total required j-subsets.
+- Unique valid groups versus total displayed groups.
+- Invalid groups, duplicate groups, or uncovered examples.
+- Whether optimality is proven (`OPTIMAL`) or only feasibility is verified.
 
 Example (small instance):
 
@@ -154,7 +174,7 @@ Note: Runtime and memory usage grow rapidly with `C(n,j)` and `C(n,k)`. Larger `
 ## 7. Limitations and Future Work
 
 - **Scalability**: enumerating all k-groups and all j-subsets can become expensive for larger `n`.
-- **Heuristics**: add a fast greedy or local-search heuristic to produce good solutions quickly, then optionally refine with ILP.
+- **Heuristics**: tune the simulated annealing schedule and perturbation operators for larger instances.
 - **Model improvements**: symmetry breaking, column generation, or lazy constraint generation could reduce model size.
 - **Export**: support exporting results to CSV/JSON and adding a report-friendly output format.
 - **Mobile adaptation** (optional): a mobile version is not included in this repository; it can be implemented as an extension.
