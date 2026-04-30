@@ -1,1 +1,1 @@
-# GUI module for the application
+from gui.main_window import MainWindow

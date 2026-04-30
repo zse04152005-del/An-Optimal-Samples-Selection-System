@@ -1,6 +1,6 @@
 # Optimal Samples Selection System
 
-A Python desktop application that solves the **Optimal Samples Selection** combinatorial optimization problem via **Integer Linear Programming (ILP)**, with a PyQt5 GUI and SQLite result storage.
+A Python desktop application that solves the **Optimal Samples Selection** combinatorial optimization problem with a **Simulated Annealing** heuristic plus **Integer Linear Programming (ILP)** refinement, with a PyQt5 GUI and SQLite result storage.
 
 ## Documentation
 

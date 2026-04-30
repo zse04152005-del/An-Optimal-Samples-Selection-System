@@ -41,7 +41,8 @@ The **Optimal Samples Selection System** is a software application designed to s
 
 - **Parameter Configuration**: Support for all valid parameter combinations (m, n, k, j, s)
 - **Sample Selection**: Random or manual sample selection
-- **Optimization Solving**: Uses Integer Linear Programming (ILP) with OR-Tools. Results are marked as optimal only when the solver or cache proves optimality.
+- **Optimization Solving**: Uses Simulated Annealing to find a strong feasible upper bound, then uses Integer Linear Programming (ILP) with OR-Tools to improve or prove optimality when possible.
+- **Result Verification**: Checks that every required j-subset is covered by at least one selected k-group.
 - **Database Storage**: Save, load, and manage results
 - **User-Friendly Interface**: Intuitive PyQt5 desktop GUI
 - **Mobile Support**: Kivy-based mobile application (Android/iOS)
@@ -158,14 +159,17 @@ Parameters                 Sample Selection
 - k: 4-7                   - Generate/Select Samples
 - j: s <= j <= k           - Selected samples display
 - s: 3-7
+- T: solve time limit
 
 Actions
 - Solve (Find Optimal Groups)
+- Verify Results
 - Save Results to DB
 - Clear
 
 Results
 - Method, status, time, and group count
+- Verification coverage, group validity, and optimality proof status
 - Table of selected k-groups
 ```
 
@@ -178,6 +182,7 @@ Results
 | k | 4-7 | Size of each output group |
 | j | s to k | Size of subsets to cover |
 | s | 3-7 | Minimum overlap required |
+| T | 5-3600 seconds | Per-round exact solver time limit |
 
 ### Constraint Rules
 
@@ -198,6 +203,7 @@ Results
 3. Set k = 6
 4. Set j = 4
 5. Set s = 4
+6. Set T = 70 seconds, or choose another preset/custom value
 
 #### Step 2: Select Samples
 
@@ -224,11 +230,18 @@ The results table shows:
 - Members of each group
 
 Statistics displayed:
-- Algorithm used (OR-Tools CP-SAT)
+- Algorithm used (Simulated Annealing, OR-Tools CP-SAT, cache, or fallback)
 - Solving time
 - Total number of groups
 
-#### Step 5: Save Results
+#### Step 5: Verify Results
+
+1. Click "Verify"
+2. The Verification panel checks all required `C(n,j)` constraints
+3. "Passed" means every j-subset is covered according to the `s` overlap rule
+4. "Optimality" shows whether the minimum group count is proven or only feasible
+
+#### Step 6: Save Results
 
 1. Click "Save Results to DB"
 2. File is saved with format: `m-n-k-j-s-run-groups.db`
@@ -342,7 +355,7 @@ pip3 install ortools
 
 **Q: What algorithm does the system usex**
 
-A: The system uses Integer Linear Programming (ILP) solved by Google OR-Tools CP-SAT solver. It guarantees optimal (minimum) solutions only when the solver status is `OPTIMAL`; `FEASIBLE` means a valid solution was found but optimality has not been proven.
+A: The system first uses Simulated Annealing to avoid greedy traps and find a good feasible solution. It then uses Integer Linear Programming (ILP) solved by Google OR-Tools CP-SAT solver. It guarantees optimal (minimum) solutions only when the solver status is `OPTIMAL`; `FEASIBLE` means a valid solution was found but optimality has not been proven.
 
 **Q: How long does solving takex**
 
